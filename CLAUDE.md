@@ -61,7 +61,7 @@ Key conversion factors in result extraction:
 
 ## FEMNet SWIG Binding Workarounds
 
-- **`GetReactForces()`** returns unusable `SwigPyObject` — use **`GetReactionData()`** instead
+- **`GetReactForces()`** — shared_ptr問題は修正済み。直接使用可能（`GetReactionData()`は廃止）
 - **`VectorLoad` iteration** has the same shared_ptr issue — compute total load mathematically (`-q_mpa * Lx_mm * Ly_mm`)
 - **`Support` accessors** (`.Uz()` etc.) return `bool*` — use `.Get(index)` instead (0=Ux, 1=Uy, 2=Uz, 3=Rx, 4=Ry, 5=Rz)
 - Cached results must be converted to plain Python/numpy types to avoid SWIG objects in Streamlit's pickle cache
