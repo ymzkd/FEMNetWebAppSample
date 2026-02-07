@@ -30,6 +30,15 @@ def kn_per_m2_to_mpa(val):
     return val / 1000.0
 
 
+def kg_per_m3_to_tonne_per_mm3(val):
+    """Convert density from kg/m³ to tonne/mm³ (FEMNet consistent unit: N, mm, s).
+
+    1 tonne = 1000 kg, 1 m³ = 1e9 mm³
+    → kg/m³ ÷ 1e3 ÷ 1e9 = kg/m³ ÷ 1e12
+    """
+    return val / 1.0e12
+
+
 # ---------------------------------------------------------------------------
 # Mesh generation
 # ---------------------------------------------------------------------------
@@ -509,6 +518,71 @@ def run_analysis(Lx_m, Ly_m, thickness_mm, E_kN_m2,
     }
 
 
+def run_vibration_analysis(Lx_m, Ly_m, thickness_mm, E_kN_m2, rho_kg_m3,
+                            nx, ny, bc_left, bc_right, bc_bottom, bc_top,
+                            n_modes):
+    """Run vibration (modal) analysis for a rectangular slab.
+
+    Returns dict with:
+      frequencies_hz: list of natural frequencies [Hz]
+      periods_s: list of natural periods [s]
+      mode_shapes_dz: list of (ny+1, nx+1) numpy arrays (Dz mode shapes)
+      x_nodes_m, y_nodes_m: 1D arrays [m]
+    """
+    Lx_mm = m_to_mm(Lx_m)
+    Ly_mm = m_to_mm(Ly_m)
+    E_mpa = E_kN_m2 / 1000.0
+    rho = kg_per_m3_to_tonne_per_mm3(rho_kg_m3)
+
+    model = FEModel()
+    create_nodes(model, Lx_mm, Ly_mm, nx, ny)
+    apply_boundary_conditions(model, Lx_mm, Ly_mm, nx, ny,
+                               bc_left, bc_right, bc_bottom, bc_top)
+    model.AddMaterialWithDensity(E_mpa, POISSON_RATIO, rho)
+    create_elements(model, nx, ny, thickness_mm, 0)
+
+    model.ComputeElementNodeMass()
+
+    eigenvalues = VectorDouble()
+    mode_vectors = VectorMode()
+    model.SolveVibration(n_modes, eigenvalues, mode_vectors)
+
+    n_nodes_x = nx + 1
+    n_nodes_y = ny + 1
+
+    # Extract node coordinates
+    x_nodes = np.array([model.GetNode(i).Location.x for i in range(n_nodes_x)]) / 1000.0
+    y_nodes = np.array([model.GetNode(j * n_nodes_x).Location.y for j in range(n_nodes_y)]) / 1000.0
+
+    # Extract frequencies and mode shapes
+    frequencies_hz = []
+    periods_s = []
+    mode_shapes_dz = []
+
+    for i in range(eigenvalues.size()):
+        omega = math.sqrt(eigenvalues[i])
+        freq = omega / (2.0 * math.pi)
+        period = 1.0 / freq if freq > 1e-12 else float('inf')
+        frequencies_hz.append(float(freq))
+        periods_s.append(float(period))
+
+        mode = mode_vectors[i]
+        dz = np.zeros((n_nodes_y, n_nodes_x))
+        for j in range(n_nodes_y):
+            for k in range(n_nodes_x):
+                nid = j * n_nodes_x + k
+                dz[j, k] = float(mode[nid].Dz())
+        mode_shapes_dz.append(dz)
+
+    return {
+        "frequencies_hz": frequencies_hz,
+        "periods_s": periods_s,
+        "mode_shapes_dz": mode_shapes_dz,
+        "x_nodes_m": x_nodes,
+        "y_nodes_m": y_nodes,
+    }
+
+
 def run_arch_analysis(L_m, W_m, f_m, thickness_mm, E_kN_m2,
                        nx, ny, bc_left, bc_right, bc_y0, bc_yW, q_kN_m2):
     """Run cylindrical arch analysis with UI-level units.
@@ -585,4 +659,71 @@ def run_arch_analysis(L_m, W_m, f_m, thickness_mm, E_kN_m2,
         "Ny_kN_m": Ny_kN_m,
         "reaction_sum_kN": reaction_kN,
         "total_load_kN": total_load_kN,
+    }
+
+
+def run_arch_vibration_analysis(L_m, W_m, f_m, thickness_mm, E_kN_m2, rho_kg_m3,
+                                 nx, ny, bc_left, bc_right, bc_y0, bc_yW,
+                                 n_modes):
+    """Run vibration (modal) analysis for a cylindrical arch.
+
+    Returns dict with:
+      frequencies_hz, periods_s: lists
+      mode_shapes_dz: list of (ny+1, nx+1) numpy arrays
+      x_nodes_m, y_nodes_m: 1D arrays [m]
+      z_arch_m: 1D array (nx+1) of arch profile [m]
+    """
+    L_mm = m_to_mm(L_m)
+    W_mm = m_to_mm(W_m)
+    f_mm = m_to_mm(f_m)
+    E_mpa = E_kN_m2 / 1000.0
+    rho = kg_per_m3_to_tonne_per_mm3(rho_kg_m3)
+
+    model = FEModel()
+    z_profile_mm = create_arch_nodes(model, L_mm, W_mm, f_mm, nx, ny)
+    apply_arch_boundary_conditions(model, L_mm, W_mm, f_mm, nx, ny,
+                                    bc_left, bc_right, bc_y0, bc_yW)
+    model.AddMaterialWithDensity(E_mpa, POISSON_RATIO, rho)
+    create_elements(model, nx, ny, thickness_mm, 0)
+
+    model.ComputeElementNodeMass()
+
+    eigenvalues = VectorDouble()
+    mode_vectors = VectorMode()
+    model.SolveVibration(n_modes, eigenvalues, mode_vectors)
+
+    n_nodes_x = nx + 1
+    n_nodes_y = ny + 1
+
+    x_nodes = np.array([model.GetNode(i).Location.x for i in range(n_nodes_x)]) / 1000.0
+    y_nodes = np.array([model.GetNode(j * n_nodes_x).Location.y for j in range(n_nodes_y)]) / 1000.0
+
+    frequencies_hz = []
+    periods_s = []
+    mode_shapes_dz = []
+
+    for i in range(eigenvalues.size()):
+        omega = math.sqrt(eigenvalues[i])
+        freq = omega / (2.0 * math.pi)
+        period = 1.0 / freq if freq > 1e-12 else float('inf')
+        frequencies_hz.append(float(freq))
+        periods_s.append(float(period))
+
+        mode = mode_vectors[i]
+        dz = np.zeros((n_nodes_y, n_nodes_x))
+        for j in range(n_nodes_y):
+            for k in range(n_nodes_x):
+                nid = j * n_nodes_x + k
+                dz[j, k] = float(mode[nid].Dz())
+        mode_shapes_dz.append(dz)
+
+    z_arch_m = z_profile_mm / 1000.0
+
+    return {
+        "frequencies_hz": frequencies_hz,
+        "periods_s": periods_s,
+        "mode_shapes_dz": mode_shapes_dz,
+        "x_nodes_m": x_nodes,
+        "y_nodes_m": y_nodes,
+        "z_arch_m": z_arch_m,
     }

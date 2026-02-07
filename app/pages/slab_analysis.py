@@ -4,7 +4,7 @@
 
 import streamlit as st
 import numpy as np
-from fem_solver import run_analysis, BC_FREE, BC_SIMPLY_SUPPORTED, BC_FIXED
+from fem_solver import run_analysis, run_vibration_analysis, BC_FREE, BC_SIMPLY_SUPPORTED, BC_FIXED
 from visualization import plot_3d_deformation, elem_to_node, CAMERA_PRESETS
 
 st.title("矩形床板設計ツール")
@@ -65,6 +65,17 @@ with st.expander("入力パラメータ", expanded=True):
     # --- Load ---
     st.subheader("荷重")
     q = st.number_input("等分布荷重 q [kN/m²]", value=5.0, min_value=0.1, step=0.5)
+
+    # --- Vibration ---
+    st.subheader("振動解析")
+    run_vibration = st.checkbox("固有値解析を実行", value=False)
+    if run_vibration:
+        col_vib1, col_vib2 = st.columns(2)
+        with col_vib1:
+            rho = st.number_input("密度 ρ [kg/m³]", value=2400.0, min_value=100.0,
+                                  step=100.0, help="コンクリート: ~2400, 鉄: ~7850")
+        with col_vib2:
+            n_modes = st.slider("モード数", 1, 10, 3)
 
 
 # =====================================================================
@@ -168,3 +179,67 @@ fig_3d = plot_3d_deformation(
     scale_ratio, camera_choice,
 )
 st.plotly_chart(fig_3d, use_container_width=True)
+
+
+# =====================================================================
+# Vibration analysis
+# =====================================================================
+if run_vibration:
+    st.header("振動解析結果")
+
+    @st.cache_data
+    def cached_vibration(Lx, Ly, thickness, E, rho, nx, ny,
+                         bc_left, bc_right, bc_bottom, bc_top, n_modes):
+        res = run_vibration_analysis(Lx, Ly, thickness, E, rho,
+                                      nx, ny, bc_left, bc_right, bc_bottom, bc_top,
+                                      n_modes)
+        return {
+            "frequencies_hz": list(res["frequencies_hz"]),
+            "periods_s": list(res["periods_s"]),
+            "mode_shapes_dz": [a.copy() for a in res["mode_shapes_dz"]],
+            "x_nodes_m": res["x_nodes_m"].copy(),
+            "y_nodes_m": res["y_nodes_m"].copy(),
+        }
+
+    try:
+        vib = cached_vibration(Lx, Ly, thickness, E, rho, nx, ny,
+                                bc_left, bc_right, bc_bottom, bc_top, n_modes)
+    except Exception as e:
+        import traceback
+        st.error(f"振動解析エラー: {e}")
+        st.code(traceback.format_exc())
+        st.stop()
+
+    # Frequency table
+    st.subheader("固有振動数")
+    import pandas as pd
+    freq_df = pd.DataFrame({
+        "モード": [i + 1 for i in range(len(vib["frequencies_hz"]))],
+        "固有振動数 [Hz]": [f"{f:.4f}" for f in vib["frequencies_hz"]],
+        "固有周期 [s]": [f"{t:.6f}" for t in vib["periods_s"]],
+        "円振動数 ω [rad/s]": [f"{f * 2 * np.pi:.4f}" for f in vib["frequencies_hz"]],
+    })
+    st.dataframe(freq_df, hide_index=True, use_container_width=True)
+
+    # Mode shape 3D plot
+    st.subheader("モード形状")
+    mode_labels = [f"モード {i + 1} ({vib['frequencies_hz'][i]:.2f} Hz)"
+                   for i in range(len(vib["frequencies_hz"]))]
+
+    col_m1, col_m2, col_m3 = st.columns([2, 2, 3])
+    with col_m1:
+        mode_sel = st.selectbox("表示モード", mode_labels)
+    with col_m2:
+        mode_camera = st.selectbox("視点 (モード)", list(CAMERA_PRESETS.keys()), key="mode_cam")
+    with col_m3:
+        mode_scale = st.slider("変形/短辺比 (モード)", 0.05, 1.0, 0.3, 0.05, key="mode_scale")
+
+    mode_idx = mode_labels.index(mode_sel)
+    mode_dz = vib["mode_shapes_dz"][mode_idx]
+
+    fig_mode = plot_3d_deformation(
+        vib["x_nodes_m"], vib["y_nodes_m"], mode_dz,
+        mode_dz, f"Mode {mode_idx + 1}", "(正規化)",
+        mode_scale, mode_camera,
+    )
+    st.plotly_chart(fig_mode, use_container_width=True)
